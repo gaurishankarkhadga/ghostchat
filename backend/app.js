@@ -56,6 +56,12 @@ io.on('connection', (socket) => {
         socket.to(roomId).emit('user-joined', socket.id);
     });
 
+    socket.on('request-peer', () => {
+        if (socket.roomId) {
+            socket.to(socket.roomId).emit('user-joined', socket.id);
+        }
+    });
+
     socket.on('disconnect', () => {
         if (socket.roomId && socket.deviceId) {
             const roomUsers = rooms.get(socket.roomId);

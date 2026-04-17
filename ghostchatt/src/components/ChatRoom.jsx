@@ -84,6 +84,17 @@ export default function ChatRoom({ roomId, onExit }) {
     }
   }, [roomId])
 
+  // Auto-Healer: Reboot P2P connection if tab was suspended by mobile OS
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && !isOnline && socketRef.current) {
+        socketRef.current.emit('request-peer')
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [isOnline])
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     localStorage.setItem(sessionKey, JSON.stringify(messages))
