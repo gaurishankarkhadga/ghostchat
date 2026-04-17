@@ -40,6 +40,11 @@ export default function ChatRoom({ roomId, onExit }) {
   useEffect(() => {
     socketRef.current = io(SOCKET_URL)
 
+    // Request Notification Permission
+    if ('Notification' in window && Notification.permission !== 'granted') {
+      Notification.requestPermission()
+    }
+
     socketRef.current.on('connect', () => {
       peerRef.current = new Peer(socketRef.current.id)
 
@@ -88,7 +93,24 @@ export default function ChatRoom({ roomId, onExit }) {
   const setupDataListeners = (connection) => {
     connection.on('open', () => setIsOnline(true))
     connection.on('data', (data) => {
-      if (data.type === 'chat') setMessages(prev => [...prev, { type: 'received', text: data.text }])
+      if (data.type === 'chat') {
+        setMessages(prev => [...prev, { type: 'received', text: data.text }])
+        
+        // Trigger generic Web Notification if tab is inactive
+        if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.ready.then(registration => {
+              registration.showNotification('New Message', {
+                body: data.text,
+                icon: '/vite.svg',
+                vibrate: [200, 100, 200]
+              })
+            })
+          } else {
+            new Notification('New Message', { body: data.text })
+          }
+        }
+      }
     })
     connection.on('close', () => setIsOnline(false))
   }
@@ -221,7 +243,9 @@ export default function ChatRoom({ roomId, onExit }) {
           <div className={`status-ring ${isOnline ? 'online' : ''}`}></div>
           <div className="user-title">
             <span className="user-name">Partner</span>
-            {isOnline && <span className="connection-badge">Secured P2P</span>}
+            <span className="connection-badge" style={{ color: isOnline ? 'var(--status-online)' : 'var(--text-muted)' }}>
+              {isOnline ? 'Online' : 'Waiting...'}
+            </span>
           </div>
         </div>
 
