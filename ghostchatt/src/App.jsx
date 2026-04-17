@@ -3,33 +3,31 @@ import Landing from './components/Landing'
 import ChatRoom from './components/ChatRoom'
 
 function App() {
-  const [roomId, setRoomId] = useState(null)
-  const [myName, setMyName] = useState(null)
-  const [partnerName, setPartnerName] = useState(null)
+  const [roomId, setRoomId] = useState(localStorage.getItem('gc_roomId') || null)
 
   // Listen for Room ID in URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const room = params.get('room')
-    if (room) {
+    if (room && !roomId) {
       setRoomId(room)
     }
-  }, [])
+  }, [roomId])
 
-  const handleJoin = (id, me, her) => {
+  const handleJoin = (id) => {
     // Update URL without refreshing the page
     window.history.pushState({}, '', `?room=${id}`)
-    setMyName(me)
-    setPartnerName(her)
     setRoomId(id)
+    localStorage.setItem('gc_roomId', id)
   }
 
   const handleExit = () => {
     // Clear URL and go back to landing
     window.history.pushState({}, '', window.location.pathname)
     setRoomId(null)
-    setMyName(null)
-    setPartnerName(null)
+    
+    localStorage.removeItem('gc_roomId')
+    localStorage.removeItem(`gc_messages_${roomId}`)
   }
 
   return (
@@ -37,8 +35,6 @@ function App() {
       {roomId ? (
         <ChatRoom 
           roomId={roomId} 
-          myName={myName} 
-          partnerName={partnerName} 
           onExit={handleExit} 
         />
       ) : (
