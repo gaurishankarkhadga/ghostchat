@@ -3,7 +3,6 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 
-
 const app = express();
 app.use(cors());
 
@@ -14,7 +13,7 @@ const io = new Server(server, {
         methods: ["GET", "POST"]
     }
 });
- 
+
 const rooms = new Map();
 
 io.on('connection', (socket) => {
