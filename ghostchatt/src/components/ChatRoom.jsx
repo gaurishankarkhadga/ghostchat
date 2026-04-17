@@ -109,7 +109,8 @@ export default function ChatRoom({ roomId, onExit }) {
               registration.showNotification('New Message', {
                 body: data.text,
                 icon: '/vite.svg',
-                vibrate: [200, 100, 200]
+                vibrate: [200, 100, 200],
+                data: { url: `/?room=${roomId}` }
               })
             })
           } else {
