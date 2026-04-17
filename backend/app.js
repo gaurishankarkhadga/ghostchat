@@ -17,33 +17,57 @@ const io = new Server(server, {
     }
 });
 
-const rooms = new Map();
+const rooms = new Map(); // roomId => Map(deviceId => socketId)
 
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
-    socket.on('join-room', (roomId) => {
-        const roomSize = rooms.get(roomId) || 0;
+    socket.on('join-room', (payload) => {
+        const roomId = typeof payload === 'string' ? payload : payload.roomId;
+        const deviceId = typeof payload === 'string' ? socket.id : payload.deviceId;
 
-        if (roomSize >= 2) {
+        if (!rooms.has(roomId)) {
+            rooms.set(roomId, new Map());
+        }
+        
+        const roomUsers = rooms.get(roomId);
+
+        // If this exact phone/device tries to join again (e.g., duplicated tab), forcibly disconnect the ghost tab to free the slot immediately.
+        if (roomUsers.has(deviceId)) {
+            const oldSocketId = roomUsers.get(deviceId);
+            roomUsers.delete(deviceId);
+            const oldSocket = io.sockets.sockets.get(oldSocketId);
+            if (oldSocket) oldSocket.disconnect(true);
+        }
+
+        if (roomUsers.size >= 2) {
             socket.emit('room-full');
             return;
         }
 
-        rooms.set(roomId, roomSize + 1);
+        roomUsers.set(deviceId, socket.id);
         socket.join(roomId);
-        console.log(`User ${socket.id} joined room ${roomId}. Size: ${roomSize + 1}`);
+        
+        // Tag socket for fast teardown
+        socket.roomId = roomId;
+        socket.deviceId = deviceId;
 
+        console.log(`User ${socket.id} joined room ${roomId}. Size: ${roomUsers.size}`);
         socket.to(roomId).emit('user-joined', socket.id);
+    });
 
-        socket.on('disconnect', () => {
-            const currentSize = rooms.get(roomId);
-            if (currentSize > 0) {
-                rooms.set(roomId, currentSize - 1);
+    socket.on('disconnect', () => {
+        if (socket.roomId && socket.deviceId) {
+            const roomUsers = rooms.get(socket.roomId);
+            if (roomUsers && roomUsers.get(socket.deviceId) === socket.id) {
+                roomUsers.delete(socket.deviceId);
+                console.log(`User ${socket.id} left room ${socket.roomId}. Size: ${roomUsers.size}`);
+                socket.to(socket.roomId).emit('user-left', socket.id);
+                if (roomUsers.size === 0) {
+                    rooms.delete(socket.roomId);
+                }
             }
-            console.log(`User ${socket.id} left room ${roomId}. Size: ${rooms.get(roomId)}`);
-            socket.to(roomId).emit('user-left', socket.id);
-        });
+        }
     });
 
     // Signaling for WebRTC (though PeerJS is used, we might need this for extra coordination)

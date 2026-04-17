@@ -38,6 +38,12 @@ export default function ChatRoom({ roomId, onExit }) {
   const messagesEndRef = useRef(null)
 
   useEffect(() => {
+    let deviceId = localStorage.getItem('gc_deviceId')
+    if (!deviceId) {
+      deviceId = Math.random().toString(36).substring(2)
+      localStorage.setItem('gc_deviceId', deviceId)
+    }
+
     socketRef.current = io(SOCKET_URL)
 
     // Request Notification Permission
@@ -49,7 +55,7 @@ export default function ChatRoom({ roomId, onExit }) {
       peerRef.current = new Peer(socketRef.current.id)
 
       peerRef.current.on('open', () => {
-        socketRef.current.emit('join-room', roomId)
+        socketRef.current.emit('join-room', { roomId, deviceId })
       })
 
       peerRef.current.on('connection', (connection) => {
