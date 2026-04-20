@@ -413,3 +413,20 @@ html, body {
 .primary-btn:hover {
   filter: brightness(1.1);
 }
+
+/* Network Banner */
+.network-banner {
+  position: absolute;
+  top: var(--safe-top);
+  left: 0;
+  width: 100%;
+  background: var(--danger);
+  color: #fff;
+  text-align: center;
+  padding: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  z-index: 6000;
+  box-shadow: 0 4px 15px rgba(255, 77, 77, 0.4);
+  animation: slide-down 0.3s ease-out;
+}

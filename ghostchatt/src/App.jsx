@@ -4,6 +4,20 @@ import ChatRoom from './components/ChatRoom'
 
 function App() {
   const [roomId, setRoomId] = useState(localStorage.getItem('gc_roomId') || null)
+  const [isOffline, setIsOffline] = useState(!navigator.onLine)
+
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false)
+    const handleOffline = () => setIsOffline(true)
+
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [])
 
   // Listen for Room ID in URL
   useEffect(() => {
@@ -32,10 +46,16 @@ function App() {
 
   return (
     <div className="app-container">
+      {isOffline && (
+        <div className="network-banner">
+          ⚠️ No Internet Connection. Check Wi-Fi or Mobile Data.
+        </div>
+      )}
       {roomId ? (
         <ChatRoom 
           roomId={roomId} 
           onExit={handleExit} 
+          setIsOffline={setIsOffline}
         />
       ) : (
         <Landing onJoin={handleJoin} />

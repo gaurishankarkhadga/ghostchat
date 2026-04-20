@@ -5,7 +5,7 @@ import { Send, Phone, PhoneOff, Mic, MicOff, XCircle, ShieldCheck, Video, VideoO
 
 const SOCKET_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000'
 
-export default function ChatRoom({ roomId, onExit }) {
+export default function ChatRoom({ roomId, onExit, setIsOffline }) {
   const sessionKey = `gc_messages_${roomId}`
   
   const [messages, setMessages] = useState(() => {
@@ -32,7 +32,7 @@ export default function ChatRoom({ roomId, onExit }) {
   const connRef = useRef()
   const callRef = useRef()
   const localStreamRef = useRef()
-  const remoteAudioRef = useRef(new Audio())
+  const remoteAudioRef = useRef(null)
   const localVideoRef = useRef(null)
   const remoteVideoRef = useRef(null)
   const messagesEndRef = useRef(null)
@@ -52,6 +52,8 @@ export default function ChatRoom({ roomId, onExit }) {
     }
 
     socketRef.current.on('connect', () => {
+      setIsOffline(false)
+      
       if (peerRef.current) {
         peerRef.current.destroy()
       }
@@ -80,6 +82,15 @@ export default function ChatRoom({ roomId, onExit }) {
       peerRef.current.on('call', (call) => {
         setIncomingCall({ call, isVideo: call.metadata?.type === 'video' })
       })
+    })
+
+    socketRef.current.on('connect_error', () => {
+      setIsOffline(true)
+    })
+
+    socketRef.current.on('disconnect', () => {
+      setIsOffline(true)
+      setIsOnline(false)
     })
 
     socketRef.current.on('user-joined', (remotePeerId) => {
@@ -270,8 +281,7 @@ export default function ChatRoom({ roomId, onExit }) {
       if (isVideo) {
         attachVideoStream(remoteVideoRef, remoteStream)
       } else {
-        remoteAudioRef.current.srcObject = remoteStream
-        remoteAudioRef.current.play()
+        attachVideoStream(remoteAudioRef, remoteStream)
       }
     })
     call.on('close', () => terminateCall())
@@ -373,6 +383,7 @@ export default function ChatRoom({ roomId, onExit }) {
 
       {inCall && !isVideoCall && (
         <div className="call-status-bar">
+          <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <div className="call-pulse"></div>
             <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Active Call</span>

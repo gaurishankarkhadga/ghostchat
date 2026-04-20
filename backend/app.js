@@ -53,7 +53,15 @@ io.on('connection', (socket) => {
         socket.deviceId = deviceId;
 
         console.log(`User ${socket.id} joined room ${roomId}. Size: ${roomUsers.size}`);
+        // Notify others that this user joined
         socket.to(roomId).emit('user-joined', socket.id);
+        
+        // Notify THIS user about the already existing users
+        for (const [existingDeviceId, existingSocketId] of roomUsers.entries()) {
+            if (existingSocketId !== socket.id) {
+                socket.emit('user-joined', existingSocketId);
+            }
+        }
     });
 
     socket.on('request-peer', () => {
