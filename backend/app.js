@@ -46,7 +46,7 @@ io.on('connection', (socket) => {
             if (oldSocket) oldSocket.disconnect(true);
         }
 
-        if (roomUsers.size >= 2) {
+        if (roomUsers.size >= 10) {
             socket.emit('room-full');
             return;
         }

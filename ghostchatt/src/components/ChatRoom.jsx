@@ -5,26 +5,48 @@ import { Send, Phone, PhoneOff, Mic, MicOff, XCircle, ShieldCheck, Video, VideoO
 
 const SOCKET_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000'
 
+// Helper component to render individual remote video/audio streams dynamically
+function RemoteMedia({ stream, isVideo }) {
+  const ref = useRef(null)
+  useEffect(() => {
+    if (ref.current && stream) {
+      ref.current.srcObject = stream
+      const playPromise = ref.current.play()
+      if (playPromise !== undefined) {
+        playPromise.catch(error => console.log('Auto-play was prevented', error))
+      }
+    }
+  }, [stream])
+
+  if (!isVideo) {
+    return <audio ref={ref} autoPlay playsInline style={{ display: 'none' }} />
+  }
+
+  return <video ref={ref} autoPlay playsInline className="remote-video" />
+}
+
 export default function ChatRoom({ roomId, onExit, setIsOffline }) {
   const sessionKey = `gc_messages_${roomId}`
   
   const [messages, setMessages] = useState(() => {
     const saved = localStorage.getItem(sessionKey)
     if (saved) {
-      try {
-        return JSON.parse(saved)
-      } catch (e) {
-        return []
-      }
+      try { return JSON.parse(saved) } catch (e) { return [] }
     }
     return []
   })
   
   const [inputText, setInputText] = useState('')
-  const [isOnline, setIsOnline] = useState(false)
+  const [connectedPeers, setConnectedPeers] = useState(new Set()) // Tracks peer IDs we are connected to
   const [inCall, setInCall] = useState(false)
   const [isVideoCall, setIsVideoCall] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
+  
+  // Maps to hold multiple connections for mesh network
+  const connsRef = useRef(new Map())
+  const callsRef = useRef(new Map())
+  const [remoteStreams, setRemoteStreams] = useState({}) // { peerId: { stream, isVideo } }
+  
   const [incomingCall, setIncomingCall] = useState(null)
   const [showPermissionModal, setShowPermissionModal] = useState(() => {
     return localStorage.getItem('gc_perms_granted') !== 'true'
@@ -33,32 +55,24 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
   const requestPermissions = async () => {
     setShowPermissionModal(false)
     localStorage.setItem('gc_perms_granted', 'true')
-
     try {
       if ('Notification' in window && Notification.permission !== 'granted') {
         Notification.requestPermission()
       }
-    } catch (e) {
-      console.log('Notification permission error:', e)
-    }
-
+    } catch (e) { console.log('Notification permission error:', e) }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
       stream.getTracks().forEach(t => t.stop())
-    } catch (e) {
-      console.log('Media permission error:', e)
-    }
+    } catch (e) { console.log('Media permission error:', e) }
   }
 
   const socketRef = useRef()
   const peerRef = useRef()
-  const connRef = useRef()
-  const callRef = useRef()
   const localStreamRef = useRef()
-  const remoteAudioRef = useRef(null)
   const localVideoRef = useRef(null)
-  const remoteVideoRef = useRef(null)
   const messagesEndRef = useRef(null)
+
+  const isOnline = connectedPeers.size > 0
 
   useEffect(() => {
     let deviceId = localStorage.getItem('gc_deviceId')
@@ -71,30 +85,15 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
 
     socketRef.current.on('connect', () => {
       setIsOffline(false)
-      
-      if (peerRef.current) {
-        peerRef.current.destroy()
-      }
+      if (peerRef.current) peerRef.current.destroy()
       
       peerRef.current = new Peer(socketRef.current.id, {
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
-            { 
-              urls: 'turn:openrelay.metered.ca:80',
-              username: 'openrelayproject',
-              credential: 'openrelayproject'
-            },
-            { 
-              urls: 'turn:openrelay.metered.ca:443',
-              username: 'openrelayproject',
-              credential: 'openrelayproject'
-            },
-            {
-              urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-              username: 'openrelayproject',
-              credential: 'openrelayproject'
-            }
+            { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
           ]
         }
       })
@@ -103,61 +102,57 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
         socketRef.current.emit('join-room', { roomId, deviceId })
       })
 
+      // When another peer connects to us via data channel
       peerRef.current.on('connection', (connection) => {
-        if (connRef.current && connRef.current.peer !== connection.peer) {
-          connRef.current.close()
-        }
-        connRef.current = connection
         setupDataListeners(connection)
       })
 
+      // When another peer calls us
       peerRef.current.on('call', (call) => {
         setIncomingCall({ call, isVideo: call.metadata?.type === 'video' })
       })
     })
 
-    socketRef.current.on('connect_error', () => {
-      setIsOffline(true)
-    })
-
+    socketRef.current.on('connect_error', () => setIsOffline(true))
     socketRef.current.on('disconnect', () => {
       setIsOffline(true)
-      setIsOnline(false)
+      setConnectedPeers(new Set())
     })
 
+    // Mesh connection logic: when someone joins, connect to them
     socketRef.current.on('user-joined', (remotePeerId) => {
-      setIsOnline(true)
       setupP2PConnection(remotePeerId)
     })
 
-    socketRef.current.on('user-left', () => {
-      setIsOnline(false)
-      if (connRef.current) connRef.current.close()
+    socketRef.current.on('user-left', (remotePeerId) => {
+      setConnectedPeers(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(remotePeerId)
+        return newSet
+      })
+      if (connsRef.current.has(remotePeerId)) {
+        connsRef.current.get(remotePeerId).close()
+        connsRef.current.delete(remotePeerId)
+      }
+      if (callsRef.current.has(remotePeerId)) {
+        callsRef.current.get(remotePeerId).close()
+        callsRef.current.delete(remotePeerId)
+      }
+      setRemoteStreams(prev => {
+        const newState = { ...prev }
+        delete newState[remotePeerId]
+        return newState
+      })
     })
 
     socketRef.current.on('chat-message', (data) => {
       if (data.type === 'chat') {
-        setMessages(prev => [...prev, { type: 'received', text: data.text }])
-        
-        if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
-          if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.ready.then(registration => {
-              registration.showNotification('New Message', {
-                body: data.text,
-                icon: '/vite.svg',
-                vibrate: [200, 100, 200],
-                data: { url: `/?room=${roomId}` }
-              })
-            })
-          } else {
-            new Notification('New Message', { body: data.text })
-          }
-        }
+        handleIncomingMessage(data.text)
       }
     })
 
     socketRef.current.on('room-full', () => {
-      alert('Room is full (max 2 users).')
+      alert('Room is full (max 10 users).')
       onExit()
     })
 
@@ -168,16 +163,20 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
     }
   }, [roomId])
 
-  // Auto-Healer: Reboot P2P connection if tab was suspended by mobile OS
-  useEffect(() => {
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible' && !isOnline && socketRef.current) {
-        socketRef.current.emit('request-peer')
+  const handleIncomingMessage = (text) => {
+    setMessages(prev => [...prev, { type: 'received', text }])
+    if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.ready.then(registration => {
+          registration.showNotification('New Message', {
+            body: text, icon: '/vite.svg', vibrate: [200, 100, 200], data: { url: `/?room=${roomId}` }
+          })
+        })
+      } else {
+        new Notification('New Message', { body: text })
       }
     }
-    document.addEventListener('visibilitychange', handleVisibility)
-    return () => document.removeEventListener('visibilitychange', handleVisibility)
-  }, [isOnline])
+  }
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -186,106 +185,65 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
 
   const setupP2PConnection = (partnerPeerId) => {
     if (!peerRef.current || !peerRef.current.open) return
-    
-    if (connRef.current && connRef.current.peer === partnerPeerId) {
-      return // Already connected or connecting to this peer
-    }
-
-    if (connRef.current) {
-      connRef.current.close()
-    }
+    if (connsRef.current.has(partnerPeerId)) return // Already connected
 
     const connection = peerRef.current.connect(partnerPeerId, { reliable: true })
-    connRef.current = connection
     setupDataListeners(connection)
   }
 
   const setupDataListeners = (connection) => {
-    if (connection.open) {
-      setIsOnline(true)
-    }
+    connection.on('open', () => {
+      connsRef.current.set(connection.peer, connection)
+      setConnectedPeers(prev => new Set(prev).add(connection.peer))
+    })
     
-    connection.on('open', () => setIsOnline(true))
     connection.on('data', (data) => {
       if (data.type === 'chat') {
-        setMessages(prev => [...prev, { type: 'received', text: data.text }])
-        
-        // Trigger generic Web Notification if tab is inactive
-        if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
-          if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.ready.then(registration => {
-              registration.showNotification('New Message', {
-                body: data.text,
-                icon: '/vite.svg',
-                vibrate: [200, 100, 200],
-                data: { url: `/?room=${roomId}` }
-              })
-            })
-          } else {
-            new Notification('New Message', { body: data.text })
-          }
-        }
+        handleIncomingMessage(data.text)
       }
     })
-    connection.on('close', () => setIsOnline(false))
+    
+    connection.on('close', () => {
+      connsRef.current.delete(connection.peer)
+      setConnectedPeers(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(connection.peer)
+        return newSet
+      })
+    })
   }
 
   const ringAudioRef = useRef(new Audio('https://upload.wikimedia.org/wikipedia/commons/c/c4/Phone_ringing.ogg'))
   ringAudioRef.current.loop = true
 
-  // Native Ringtone & Haptics Loop
   useEffect(() => {
     let vibInterval;
     if (incomingCall) {
       ringAudioRef.current.play().catch(e => console.log('Audio autoplay blocked', e))
       if (navigator.vibrate) {
         navigator.vibrate([1000, 500, 1000])
-        vibInterval = setInterval(() => {
-          navigator.vibrate([1000, 500, 1000])
-        }, 2000)
+        vibInterval = setInterval(() => navigator.vibrate([1000, 500, 1000]), 2000)
       }
     } else {
       ringAudioRef.current.pause()
       ringAudioRef.current.currentTime = 0
-      if (navigator.vibrate) {
-        navigator.vibrate(0)
-      }
+      if (navigator.vibrate) navigator.vibrate(0)
       if (vibInterval) clearInterval(vibInterval)
     }
-    return () => {
-      if (vibInterval) clearInterval(vibInterval)
-    }
+    return () => { if (vibInterval) clearInterval(vibInterval) }
   }, [incomingCall])
 
-  const attachVideoStream = (videoRef, stream) => {
-    let attempts = 0
-    const tryAttach = () => {
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        // Explicitly play to bypass mobile async autoplay restrictions
-        const playPromise = videoRef.current.play()
-        if (playPromise !== undefined) {
-          playPromise.catch(error => console.log('Auto-play was prevented', error))
-        }
-      } else if (attempts < 20) {
-        attempts++
-        setTimeout(tryAttach, 50)
-      }
-    }
-    tryAttach()
-  }
-
   const getMediaConstraints = (videoVal) => ({
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true
-    },
-    video: videoVal ? {
-      width: { ideal: 320, max: 480 },
-      frameRate: { ideal: 15, max: 20 },
-      facingMode: "user"
-    } : false
+    audio: { echoCancellation: true, noiseSuppression: true },
+    video: videoVal ? { width: { ideal: 320, max: 480 }, frameRate: { ideal: 15, max: 20 }, facingMode: "user" } : false
   })
+
+  const attachLocalVideo = (stream) => {
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = stream
+      localVideoRef.current.play().catch(e => console.log('Local video play blocked', e))
+    }
+  }
 
   const acceptCall = async () => {
     if (!incomingCall) return
@@ -297,9 +255,8 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
       incomingCall.call.answer(stream)
       setupCallListeners(incomingCall.call, isVideo)
       setIncomingCall(null)
-      if (isVideo) {
-        attachVideoStream(localVideoRef, stream)
-      }
+      setInCall(true)
+      if (isVideo) attachLocalVideo(stream)
     } catch (err) {
       alert('Media access denied.')
       setIncomingCall(null)
@@ -312,16 +269,23 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
   }
 
   const setupCallListeners = (call, isVideo) => {
-    callRef.current = call
-    setInCall(true)
+    callsRef.current.set(call.peer, call)
     call.on('stream', (remoteStream) => {
-      if (isVideo) {
-        attachVideoStream(remoteVideoRef, remoteStream)
-      } else {
-        attachVideoStream(remoteAudioRef, remoteStream)
-      }
+      setRemoteStreams(prev => ({
+        ...prev,
+        [call.peer]: { stream: remoteStream, isVideo }
+      }))
     })
-    call.on('close', () => terminateCall())
+    call.on('close', () => {
+      callsRef.current.delete(call.peer)
+      setRemoteStreams(prev => {
+        const newState = { ...prev }
+        delete newState[call.peer]
+        return newState
+      })
+      // If no calls left, end call mode
+      if (callsRef.current.size === 0) terminateCall()
+    })
   }
 
   const toggleCall = async (video = false) => {
@@ -329,23 +293,35 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
       terminateCall()
       return
     }
+    
+    if (connectedPeers.size === 0) {
+      alert("No one is in the room to call.")
+      return
+    }
+
     setIsVideoCall(video)
     try {
       const stream = await navigator.mediaDevices.getUserMedia(getMediaConstraints(video))
       localStreamRef.current = stream
-      const call = peerRef.current.call(connRef.current.peer, stream, { metadata: { type: video ? 'video' : 'audio' } })
-      setupCallListeners(call, video)
+      setInCall(true)
       
-      if (video) {
-        attachVideoStream(localVideoRef, stream)
-      }
+      if (video) attachLocalVideo(stream)
+
+      // Call all connected peers
+      connectedPeers.forEach(peerId => {
+        const call = peerRef.current.call(peerId, stream, { metadata: { type: video ? 'video' : 'audio' } })
+        setupCallListeners(call, video)
+      })
     } catch (err) {
       alert('Media access denied.')
+      setInCall(false)
     }
   }
 
   const terminateCall = () => {
-    if (callRef.current) callRef.current.close()
+    callsRef.current.forEach(call => call.close())
+    callsRef.current.clear()
+    setRemoteStreams({})
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(t => t.stop())
       localStreamRef.current = null
@@ -358,14 +334,18 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
     e.preventDefault()
     if (!inputText) return
     
-    // Try WebRTC Data Channel first
-    if (connRef.current && connRef.current.open) {
-      connRef.current.send({ type: 'chat', text: inputText })
-    } else if (socketRef.current && isOnline) {
-      // Fallback to Socket.io Relay
+    // Broadcast to all P2P Data Channels
+    let sentViaP2P = false
+    connsRef.current.forEach(conn => {
+      if (conn.open) {
+        conn.send({ type: 'chat', text: inputText })
+        sentViaP2P = true
+      }
+    })
+
+    // If P2P failed or not fully connected, fallback to Socket.io Relay
+    if (!sentViaP2P && socketRef.current && isOnline) {
       socketRef.current.emit('chat-message', { type: 'chat', text: inputText })
-    } else {
-      return // Cannot send
     }
     
     setMessages(prev => [...prev, { type: 'sent', text: inputText }])
@@ -378,7 +358,6 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
         <div className="overlay" style={{ zIndex: 1000 }}>
           <div className="glass-card" style={{ maxWidth: '320px', textAlign: 'center' }}>
             <h2 style={{ marginBottom: '20px' }}>Setup Device</h2>
-            
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '25px', textAlign: 'left' }}>
                <div style={{ display: 'flex', alignItems: 'center', gap: '15px', background: 'rgba(255,255,255,0.05)', padding: '12px', borderRadius: '12px' }}>
                   <Video size={18} color="var(--primary)" />
@@ -393,13 +372,8 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
                   <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>Notifications</span>
                </div>
             </div>
-
-            <button className="primary-btn" onClick={requestPermissions} style={{ width: '100%', marginBottom: '10px' }}>
-              Allow Access
-            </button>
-            <button className="icon-btn" onClick={() => setShowPermissionModal(false)} style={{ width: '100%', background: 'transparent', color: 'var(--text-muted)', fontSize: '0.9rem', padding: '10px' }}>
-              Skip
-            </button>
+            <button className="primary-btn" onClick={requestPermissions} style={{ width: '100%', marginBottom: '10px' }}>Allow Access</button>
+            <button className="icon-btn" onClick={() => setShowPermissionModal(false)} style={{ width: '100%', background: 'transparent', color: 'var(--text-muted)', fontSize: '0.9rem', padding: '10px' }}>Skip</button>
           </div>
         </div>
       )}
@@ -408,7 +382,7 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
         <div className="overlay">
           <div className="glass-card">
             <h2 style={{ marginBottom: '10px' }}>Inbound {incomingCall.isVideo ? 'Video' : 'Voice'} Call</h2>
-            <p style={{ color: 'var(--text-muted)', marginBottom: '30px' }}>Your partner is calling you...</p>
+            <p style={{ color: 'var(--text-muted)', marginBottom: '30px' }}>Someone is calling the room...</p>
             <div style={{ display: 'flex', gap: '15px' }}>
               <button className="primary-btn" onClick={acceptCall} style={{ background: 'var(--status-online)' }}>Accept</button>
               <button className="primary-btn" onClick={declineCall} style={{ background: 'var(--danger)', color: '#fff' }}>Decline</button>
@@ -419,7 +393,9 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
 
       {inCall && isVideoCall && (
         <div className="centered-video-container">
-          <video ref={remoteVideoRef} autoPlay playsInline className="remote-video" />
+          {Object.entries(remoteStreams).map(([peerId, data]) => (
+             data.isVideo ? <RemoteMedia key={peerId} stream={data.stream} isVideo={true} /> : null
+          ))}
           <video ref={localVideoRef} autoPlay playsInline muted className="local-video-pip" />
         </div>
       )}
@@ -428,18 +404,18 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
         <div className="header-left">
           <div className={`status-ring ${isOnline ? 'online' : ''}`}></div>
           <div className="user-title">
-            <span className="user-name">Partner</span>
+            <span className="user-name">{connectedPeers.size > 0 ? `Room (${connectedPeers.size + 1})` : 'Waiting...'}</span>
             <span className="connection-badge" style={{ color: isOnline ? 'var(--status-online)' : 'var(--text-muted)' }}>
-              {isOnline ? 'Online' : 'Waiting...'}
+              {isOnline ? `${connectedPeers.size} Peers Connected` : 'Offline'}
             </span>
           </div>
         </div>
 
         <div className="header-right">
-          <button className={`icon-btn ${inCall && isVideoCall ? 'active' : ''}`} onClick={() => toggleCall(true)} title="Video Call">
+          <button className={`icon-btn ${inCall && isVideoCall ? 'active' : ''}`} onClick={() => toggleCall(true)} title="Group Video Call">
             {inCall && isVideoCall ? <VideoOff size={20} /> : <Video size={20} />}
           </button>
-          <button className={`icon-btn ${inCall && !isVideoCall ? 'active' : ''}`} onClick={() => toggleCall(false)} title="Voice Call">
+          <button className={`icon-btn ${inCall && !isVideoCall ? 'active' : ''}`} onClick={() => toggleCall(false)} title="Group Voice Call">
             {inCall && !isVideoCall && inCall ? <PhoneOff size={20} /> : <Phone size={20} />}
           </button>
           <button className="icon-btn danger" onClick={onExit} title="Exit">
@@ -450,10 +426,12 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
 
       {inCall && !isVideoCall && (
         <div className="call-status-bar">
-          <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
+          {Object.entries(remoteStreams).map(([peerId, data]) => (
+             !data.isVideo ? <RemoteMedia key={peerId} stream={data.stream} isVideo={false} /> : null
+          ))}
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <div className="call-pulse"></div>
-            <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Active Call</span>
+            <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Active Call ({Object.keys(remoteStreams).length + 1})</span>
           </div>
           <button className="icon-btn" onClick={() => {
               if (!localStreamRef.current) return;
