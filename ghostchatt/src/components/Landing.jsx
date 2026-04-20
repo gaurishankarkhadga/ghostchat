@@ -20,10 +20,10 @@ export default function Landing({ onJoin }) {
           <Ghost size={56} className="logo-ghost" />
         </div>
         
-        <h1 className="landing-title">Ghost Chat</h1>
+        <h1 className="landing-title">Kagati</h1>
 
         <form onSubmit={handleConnect}>
-          <div className="input-field-group">
+          <div className="input-field-group" style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
             <input 
               type="text" 
               placeholder="Enter Room Code (e.g. 1234)" 
@@ -31,10 +31,24 @@ export default function Landing({ onJoin }) {
               onChange={(e) => setRoomCode(e.target.value)}
               required
               className="landing-input"
-              style={{ width: '100%' }}
+              style={{ width: '100%', paddingRight: '56px' }}
             />
-            <button type="submit" className="primary-btn" style={{ marginTop: '15px' }}>
-              <span>Join Room</span>
+            <button 
+              type="submit" 
+              className="icon-btn active"
+              style={{ 
+                position: 'absolute', 
+                right: '6px', 
+                width: '42px', 
+                height: '42px', 
+                borderRadius: '50%', 
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'center',
+                padding: '0'
+              }}
+            >
+              <ArrowRight size={20} />
             </button>
           </div>
         </form>

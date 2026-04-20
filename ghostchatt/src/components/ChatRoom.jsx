@@ -52,13 +52,27 @@ export default function ChatRoom({ roomId, onExit }) {
     }
 
     socketRef.current.on('connect', () => {
-      peerRef.current = new Peer(socketRef.current.id)
+      if (peerRef.current) {
+        peerRef.current.destroy()
+      }
+      
+      peerRef.current = new Peer(socketRef.current.id, {
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' }
+          ]
+        }
+      })
 
       peerRef.current.on('open', () => {
         socketRef.current.emit('join-room', { roomId, deviceId })
       })
 
       peerRef.current.on('connection', (connection) => {
+        if (connRef.current && connRef.current.peer !== connection.peer) {
+          connRef.current.close()
+        }
         connRef.current = connection
         setupDataListeners(connection)
       })
@@ -69,7 +83,34 @@ export default function ChatRoom({ roomId, onExit }) {
     })
 
     socketRef.current.on('user-joined', (remotePeerId) => {
+      setIsOnline(true)
       setupP2PConnection(remotePeerId)
+    })
+
+    socketRef.current.on('user-left', () => {
+      setIsOnline(false)
+      if (connRef.current) connRef.current.close()
+    })
+
+    socketRef.current.on('chat-message', (data) => {
+      if (data.type === 'chat') {
+        setMessages(prev => [...prev, { type: 'received', text: data.text }])
+        
+        if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.ready.then(registration => {
+              registration.showNotification('New Message', {
+                body: data.text,
+                icon: '/vite.svg',
+                vibrate: [200, 100, 200],
+                data: { url: `/?room=${roomId}` }
+              })
+            })
+          } else {
+            new Notification('New Message', { body: data.text })
+          }
+        }
+      }
     })
 
     socketRef.current.on('room-full', () => {
@@ -101,13 +142,26 @@ export default function ChatRoom({ roomId, onExit }) {
   }, [messages, sessionKey])
 
   const setupP2PConnection = (partnerPeerId) => {
-    if (connRef.current?.open || !peerRef.current || !peerRef.current.open) return
+    if (!peerRef.current || !peerRef.current.open) return
+    
+    if (connRef.current && connRef.current.peer === partnerPeerId) {
+      return // Already connected or connecting to this peer
+    }
+
+    if (connRef.current) {
+      connRef.current.close()
+    }
+
     const connection = peerRef.current.connect(partnerPeerId, { reliable: true })
     connRef.current = connection
     setupDataListeners(connection)
   }
 
   const setupDataListeners = (connection) => {
+    if (connection.open) {
+      setIsOnline(true)
+    }
+    
     connection.on('open', () => setIsOnline(true))
     connection.on('data', (data) => {
       if (data.type === 'chat') {
@@ -133,6 +187,33 @@ export default function ChatRoom({ roomId, onExit }) {
     connection.on('close', () => setIsOnline(false))
   }
 
+  const ringAudioRef = useRef(new Audio('https://upload.wikimedia.org/wikipedia/commons/c/c4/Phone_ringing.ogg'))
+  ringAudioRef.current.loop = true
+
+  // Native Ringtone & Haptics Loop
+  useEffect(() => {
+    let vibInterval;
+    if (incomingCall) {
+      ringAudioRef.current.play().catch(e => console.log('Audio autoplay blocked', e))
+      if (navigator.vibrate) {
+        navigator.vibrate([1000, 500, 1000])
+        vibInterval = setInterval(() => {
+          navigator.vibrate([1000, 500, 1000])
+        }, 2000)
+      }
+    } else {
+      ringAudioRef.current.pause()
+      ringAudioRef.current.currentTime = 0
+      if (navigator.vibrate) {
+        navigator.vibrate(0)
+      }
+      if (vibInterval) clearInterval(vibInterval)
+    }
+    return () => {
+      if (vibInterval) clearInterval(vibInterval)
+    }
+  }, [incomingCall])
+
   const attachVideoStream = (videoRef, stream) => {
     let attempts = 0
     const tryAttach = () => {
@@ -152,8 +233,8 @@ export default function ChatRoom({ roomId, onExit }) {
       noiseSuppression: true
     },
     video: videoVal ? {
-      width: { ideal: 320, max: 480 }, /* Ultra-low resolution for old devices */
-      frameRate: { ideal: 15, max: 20 }, /* Minimal CPU encoding load */
+      width: { ideal: 320, max: 480 },
+      frameRate: { ideal: 15, max: 20 },
       facingMode: "user"
     } : false
   })
@@ -228,8 +309,18 @@ export default function ChatRoom({ roomId, onExit }) {
 
   const sendMessage = (e) => {
     e.preventDefault()
-    if (!inputText || !connRef.current) return
-    connRef.current.send({ type: 'chat', text: inputText })
+    if (!inputText) return
+    
+    // Try WebRTC Data Channel first
+    if (connRef.current && connRef.current.open) {
+      connRef.current.send({ type: 'chat', text: inputText })
+    } else if (socketRef.current && isOnline) {
+      // Fallback to Socket.io Relay
+      socketRef.current.emit('chat-message', { type: 'chat', text: inputText })
+    } else {
+      return // Cannot send
+    }
+    
     setMessages(prev => [...prev, { type: 'sent', text: inputText }])
     setInputText('')
   }

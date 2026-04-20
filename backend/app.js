@@ -80,6 +80,13 @@ io.on('connection', (socket) => {
     socket.on('signal', ({ roomId, signal }) => {
         socket.to(roomId).emit('signal', signal);
     });
+
+    // Fallback relay for chat messages in case WebRTC Data Channels are blocked by mobile carriers
+    socket.on('chat-message', (payload) => {
+        if (socket.roomId) {
+            socket.to(socket.roomId).emit('chat-message', payload);
+        }
+    });
 });
 
 const PORT = process.env.PORT || 5000;
