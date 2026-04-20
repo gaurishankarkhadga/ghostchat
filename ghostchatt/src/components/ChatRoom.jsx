@@ -113,6 +113,15 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
       }
     })
 
+    socketRef.current.on('room-status', ({ count }) => {
+      setIsOnline(count > 1)
+    })
+
+    // Auto-request peer on initial mount if socket is ready
+    if (socketRef.current.connected) {
+      socketRef.current.emit('request-peer')
+    }
+
     socketRef.current.on('room-full', () => {
       alert('Room is full (max 2 users).')
       onExit()
@@ -165,6 +174,27 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
     }
     return () => { if (vibInterval) clearInterval(vibInterval) }
   }, [incomingCall])
+
+  // Auto-Healer: Reboot P2P connection if tab was suspended by mobile OS or network switched
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && !isOnline && socketRef.current) {
+        socketRef.current.emit('request-peer')
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [isOnline])
+
+  // Sync Heartbeat: Periodically request peer if not online to ensure sync
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (!isOnline && socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit('request-peer')
+      }
+    }, 5000) // Every 5 seconds
+    return () => clearInterval(interval)
+  }, [isOnline])
 
   const attachVideoStream = (videoRef, stream) => {
     let attempts = 0

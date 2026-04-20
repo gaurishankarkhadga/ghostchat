@@ -59,6 +59,10 @@ io.on('connection', (socket) => {
         socket.deviceId = deviceId;
 
         console.log(`User ${socket.id} joined room ${roomId}. Size: ${roomUsers.size}`);
+        
+        // Broadcast current room status to everyone in the room
+        io.to(roomId).emit('room-status', { count: roomUsers.size });
+
         // Notify others that this user joined
         socket.to(roomId).emit('user-joined', socket.id);
         
@@ -83,6 +87,8 @@ io.on('connection', (socket) => {
                 roomUsers.delete(socket.deviceId);
                 console.log(`User ${socket.id} left room ${socket.roomId}. Size: ${roomUsers.size}`);
                 socket.to(socket.roomId).emit('user-left', socket.id);
+                // Update room status for remaining user
+                io.to(socket.roomId).emit('room-status', { count: roomUsers.size });
                 if (roomUsers.size === 0) {
                     rooms.delete(socket.roomId);
                 }
