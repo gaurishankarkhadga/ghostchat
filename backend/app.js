@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
+const https = require('https');
 const { Server } = require('socket.io');
 const cors = require('cors');
 
@@ -8,6 +9,11 @@ const app = express();
 app.use(cors({
     origin: process.env.FRONTEND_URL || "http://localhost:5173"
 }));
+
+// Health check route used for the keep-alive ping
+app.get('/ping', (req, res) => {
+    res.status(200).send('Server is alive!');
+});
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -100,4 +106,24 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
     console.log(`Ghost Signaling Server running on port ${PORT}`);
+    
+    // --- Render Keep-Alive Script ---
+    // Render free tier sleeps after 15 mins of inactivity.
+    // This will ping the server every 14 minutes to keep it awake.
+    const url = process.env.RENDER_EXTERNAL_URL;
+    
+    if (url) {
+        console.log(`Keep-alive script activated for: ${url}`);
+        setInterval(() => {
+            https.get(`${url}/ping`, (res) => {
+                if (res.statusCode === 200) {
+                    console.log('Keep-alive ping successful!');
+                }
+            }).on('error', (err) => {
+                console.error('Keep-alive ping failed:', err.message);
+            });
+        }, 14 * 60 * 1000); // 14 minutes
+    } else {
+        console.log('RENDER_EXTERNAL_URL not set in env. Keep-alive disabled (Expected for local dev).');
+    }
 });

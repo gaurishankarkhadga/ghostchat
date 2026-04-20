@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { io } from 'socket.io-client'
 import Peer from 'peerjs'
-import { Send, Phone, PhoneOff, Mic, MicOff, XCircle, ShieldCheck, Video, VideoOff } from 'lucide-react'
+import { Send, Phone, PhoneOff, Mic, MicOff, XCircle, ShieldCheck, Video, VideoOff, Bell } from 'lucide-react'
 
 const SOCKET_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000'
 
@@ -26,6 +26,29 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
   const [isVideoCall, setIsVideoCall] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
   const [incomingCall, setIncomingCall] = useState(null)
+  const [showPermissionModal, setShowPermissionModal] = useState(() => {
+    return localStorage.getItem('gc_perms_granted') !== 'true'
+  })
+
+  const requestPermissions = async () => {
+    setShowPermissionModal(false)
+    localStorage.setItem('gc_perms_granted', 'true')
+
+    try {
+      if ('Notification' in window && Notification.permission !== 'granted') {
+        Notification.requestPermission()
+      }
+    } catch (e) {
+      console.log('Notification permission error:', e)
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+      stream.getTracks().forEach(t => t.stop())
+    } catch (e) {
+      console.log('Media permission error:', e)
+    }
+  }
 
   const socketRef = useRef()
   const peerRef = useRef()
@@ -46,11 +69,6 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
 
     socketRef.current = io(SOCKET_URL)
 
-    // Request Notification Permission
-    if ('Notification' in window && Notification.permission !== 'granted') {
-      Notification.requestPermission()
-    }
-
     socketRef.current.on('connect', () => {
       setIsOffline(false)
       
@@ -62,7 +80,21 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' }
+            { 
+              urls: 'turn:openrelay.metered.ca:80',
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            },
+            { 
+              urls: 'turn:openrelay.metered.ca:443',
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            },
+            {
+              urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            }
           ]
         }
       })
@@ -230,6 +262,11 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
     const tryAttach = () => {
       if (videoRef.current) {
         videoRef.current.srcObject = stream
+        // Explicitly play to bypass mobile async autoplay restrictions
+        const playPromise = videoRef.current.play()
+        if (playPromise !== undefined) {
+          playPromise.catch(error => console.log('Auto-play was prevented', error))
+        }
       } else if (attempts < 20) {
         attempts++
         setTimeout(tryAttach, 50)
@@ -337,6 +374,36 @@ export default function ChatRoom({ roomId, onExit, setIsOffline }) {
 
   return (
     <div className="app-container">
+      {showPermissionModal && (
+        <div className="overlay" style={{ zIndex: 1000 }}>
+          <div className="glass-card" style={{ maxWidth: '320px', textAlign: 'center' }}>
+            <h2 style={{ marginBottom: '20px' }}>Setup Device</h2>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '25px', textAlign: 'left' }}>
+               <div style={{ display: 'flex', alignItems: 'center', gap: '15px', background: 'rgba(255,255,255,0.05)', padding: '12px', borderRadius: '12px' }}>
+                  <Video size={18} color="var(--primary)" />
+                  <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>Camera</span>
+               </div>
+               <div style={{ display: 'flex', alignItems: 'center', gap: '15px', background: 'rgba(255,255,255,0.05)', padding: '12px', borderRadius: '12px' }}>
+                  <Mic size={18} color="var(--primary)" />
+                  <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>Microphone</span>
+               </div>
+               <div style={{ display: 'flex', alignItems: 'center', gap: '15px', background: 'rgba(255,255,255,0.05)', padding: '12px', borderRadius: '12px' }}>
+                  <Bell size={18} color="var(--primary)" />
+                  <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>Notifications</span>
+               </div>
+            </div>
+
+            <button className="primary-btn" onClick={requestPermissions} style={{ width: '100%', marginBottom: '10px' }}>
+              Allow Access
+            </button>
+            <button className="icon-btn" onClick={() => setShowPermissionModal(false)} style={{ width: '100%', background: 'transparent', color: 'var(--text-muted)', fontSize: '0.9rem', padding: '10px' }}>
+              Skip
+            </button>
+          </div>
+        </div>
+      )}
+
       {incomingCall && (
         <div className="overlay">
           <div className="glass-card">
